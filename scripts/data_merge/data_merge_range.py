@@ -21,11 +21,38 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s",
     handlers=[
-        logging.FileHandler("dataset_validation_report5.log", encoding="utf-8"),
+        logging.FileHandler("dataset_validation_report7.log", encoding="utf-8"),
         logging.StreamHandler()
     ]
 )
 logger = logging.getLogger(__name__)
+
+# ====================== 【仅此处添加UUID】 ======================
+TARGET_UUIDS = [
+    '7b86b017-93e7-4031-9f8e-be2ae24a8f4e',
+    'd4e9a4ab-1a29-4636-9bb8-1f5183e429d2',
+    '203e1be7-f38a-49a6-b1ae-11477c673f79',
+    '983154c9-dcf9-446b-b5ee-2707b470f185',
+    'aa677292-5a32-4e80-ab78-0aa598818f4c',
+    '0298514b-57cd-4d91-913a-81bce8b531f5',
+    'c5049fbd-1ffe-41b3-82f9-9906a5dd9d4d',
+    '12c90605-38c4-4fce-b333-8a75fb70309d',
+    '4bdf2875-4362-44c6-a196-0257414dc31f',
+    '92423310-27fd-4dad-b980-d6beee4745d0',
+    '21d87d92-9aef-4aa2-b370-d702ce87f24e',
+    '09c1f613-16b7-4bd9-8885-6c6c56880804',
+    'd856a081-4998-43c9-8ba9-1b28f52a0f6e',
+    '119b6a9a-5408-4f57-83fe-4156b1afd9f0',
+    '60cf7d0f-2656-4819-baab-ce1b9ecb5bf1',
+    '22417619-aae5-4c2d-b18b-d07990f5fcac',
+    'fc6e3f46-105a-456c-afc4-b3ca8e701857',
+    '0b8d5fcf-c684-4e26-9c6a-5ddca5d94ede',
+    '774e7025-eb94-4c42-841f-ab64f9849b1f',
+    'ecebb15f-6434-4ba0-bb23-73f5be418b3b',
+    '943e9777-7526-4d63-8000-b8b9b20942f4',
+    '8c8eae1d-086d-4ef3-b908-bb55c1d82660',
+    '615bb6b3-b56c-4608-ac3b-73231a7f8844'
+]
 
 # ====================== 核心调度逻辑 ======================
 def run_validation_on_all_datasets():
@@ -37,8 +64,7 @@ def run_validation_on_all_datasets():
     with db.with_session() as session:
         datasets: List[DatasetDB] = (
             session.query(DatasetDB)
-            .filter(DatasetDB.data_merge_status == TaskStatus.COMPLETED)
-            .filter(DatasetDB.is_ignore == False)  # 只校验未被忽略的数据
+            .filter(DatasetDB.dataset_uuid.in_(TARGET_UUIDS))  # 👈 只改这里
             .all()
         )
 
@@ -50,7 +76,7 @@ def run_validation_on_all_datasets():
 
         for idx, ds in enumerate(datasets, 1):
             dataset_uuid = ds.dataset_uuid
-            convert_path = ds.qced_repo_gen_path
+            convert_path = ds.convert_path
             device_model = ds.device_model.strip() if ds.device_model else "未知设备"  # 读取设备型号
 
             logger.info(f"===== 正在校验第 {idx}/{len(datasets)} 个数据集 =====")
