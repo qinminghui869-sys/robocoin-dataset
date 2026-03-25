@@ -39,13 +39,47 @@ class StateActionDataPostProcessorBase(DataPostProcessorBase):
             # 如果数据长度小于窗口大小，直接返回原数据
             return data
         
-        smoothed_data = np.zeros_like(data)
+        processed_data = np.zeros_like(data)
         for i in range(data.shape[1]):
             series = pd.Series(data[:, i])
+            
+            # 0. 清理原有的无穷大或 NaN
+            series = series.replace([np.inf, -np.inf], np.nan)
+            if series.isna().any():
+                series = series.interpolate(method='linear', limit_direction='both').bfill().ffill()
+            
+            # 1. 异常极大/极小值检测与插值 (针对传感器瞬断产生的异常值，例如 32767 或极大负值)
+            # 扩大窗口大小为 21。如果遇到连续掉线数帧(最多10帧)，中位数依然能保持正常的基准值不被带偏。
+            rolling_median = series.rolling(window=21, min_periods=1, center=True).median()
+            
+            # 计算正常步长（不再使用 non_zero_diffs 的中位数，防止在长时间静止的序列中，唯一的非零步长就是由于异常突变产生的！）
+            diffs = np.abs(np.diff(series.values))
+            
+            # 取 95 分位数作为“绝大多数正常情况下的最大步长”的参考，自动无视了极少数发生突变的帧
+            normal_step = np.percentile(diffs, 95)
+            if normal_step < 1e-6:
+                normal_step = 1e-3
+                    
+            # 阈值设为正常步长的 20 倍，且最小绝对容差限制为 0.1 (对细微抖动不敏感)
+            # 增加一个最大物理跳变上限约束，比如单帧内变化超过 50 绝对是硬伤，不可被宽恕。
+            threshold = np.maximum(normal_step * 20, 0.1)
+            threshold = np.minimum(threshold, 50.0) 
+            
+            # 标记异常值并用 NaN 替换
+            outliers = np.abs(series - rolling_median) > threshold
+            if outliers.any():
+                series = series.copy()
+                series[outliers] = np.nan
+                # 线性插值
+                series = series.interpolate(method='linear', limit_direction='both')
+                # 处理可能位于首尾的 NaN
+                series = series.bfill().ffill()
+
+            # 2. 滑动平均平滑
             smoothed_series = series.rolling(window=window_size, min_periods=1, center=True).mean()
-            smoothed_data[:, i] = smoothed_series.values
+            processed_data[:, i] = smoothed_series.values
         
-        return smoothed_data
+        return processed_data
 
     def smooth_dict_data(self, data_dict: dict[str, np.ndarray], window_size: int = 4) -> dict[str, np.ndarray]:
         """

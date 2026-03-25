@@ -16,7 +16,7 @@ import numpy as np
 import pandas as pd
 
 # ====================== 日志配置（终端+文件） ======================
-DB_FILE_PATH = "db/postgresql_config.yaml"
+DB_FILE_PATH = "db/my_config.yaml"
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s",
@@ -83,7 +83,7 @@ def run_validation_on_all_datasets():
                     logger.info(f"✅ 数据集校验通过\n")
                 else:
                     # 校验失败 → 标记异常+忽略
-                    mark_as_invalid_and_ignore(f"数据集存在异常，已跳过该数据集！异常信息：{error_msg[:200]}...")
+                    mark_as_invalid_and_ignore(f"数据集存在异常，已跳过该数据集！\n完整异常信息：\n{error_msg}")
 
             except Exception as e:
                 # 程序异常 → 标记异常+忽略
@@ -200,18 +200,20 @@ class LerobotDatasetValidator:
                 names_map[feat_name] = feat_info["names"]
         return names_map
 
-    def _check_single_parquet_fast(self, file_path: Path) -> str:
-        """🔥 快速检查：发现第一个错误立即返回错误信息，不再继续"""
+    def _check_single_parquet(self, file_path: Path) -> List[str]:
+        """全面检查：记录所有错误信息"""
+        errors = []
         try:
             df = pd.read_parquet(file_path)
         except Exception as e:
-            return f"Parquet读取失败: {str(e)}"
+            return [f"Parquet读取失败: {str(e)}"]
 
         for feature_name, feature_info in self.expected_features.items():
             if not (feature_name.startswith("action") or feature_name.startswith("observation.state")):
                 continue
             if feature_name not in df.columns:
-                return f"缺失特征列: {feature_name}"
+                errors.append(f"缺失特征列: {feature_name}")
+                continue
 
             expected_shape = tuple(feature_info.get('shape', []))
             dtype = feature_info.get('dtype')
@@ -221,22 +223,25 @@ class LerobotDatasetValidator:
             try:
                 np_data = np.vstack(df[feature_name].values)
             except ValueError:
-                return f"特征 {feature_name} 数据格式错乱"
+                errors.append(f"特征 {feature_name} 数据格式错乱")
+                continue
 
             # 维度检查
             actual_shape = np_data.shape[1:]
             if actual_shape != expected_shape:
-                return f"{feature_name} 维度不匹配: 预期{expected_shape} 实际{actual_shape}"
+                errors.append(f"{feature_name} 维度不匹配: 预期{expected_shape} 实际{actual_shape}")
 
             # NaN/Inf检查
             if np_data.dtype.kind in 'fc':
                 if np.isnan(np_data).any() or np.isinf(np_data).any():
-                    return f"{feature_name} 存在NaN/Inf异常值"
+                    errors.append(f"{feature_name} 存在NaN/Inf异常值")
 
-            # 物理极值检查（快速失败）
+            # 物理极值检查
             if feature_name in self.feature_names_map:
                 sub_names = self.feature_names_map[feature_name]
                 for col_idx, sub_name in enumerate(sub_names):
+                    if col_idx >= np_data.shape[1]:
+                        continue
                     col_data_np = np_data[:, col_idx]
                     matched_bounds = None
                     for keyword, bounds in self.FINE_GRAINED_BOUNDS.items():
@@ -245,28 +250,33 @@ class LerobotDatasetValidator:
                             break
                     if matched_bounds:
                         hard_min, hard_max = matched_bounds["min"], matched_bounds["max"]
-                        if np.any(col_data_np < hard_min - 1e-4) or np.any(col_data_np > hard_max + 1e-4):
-                            return f"{feature_name}.{sub_name} 超出物理极值范围"
+                        actual_min, actual_max = np.min(col_data_np), np.max(col_data_np)
+                        if actual_min < hard_min - 1e-4 or actual_max > hard_max + 1e-4:
+                            errors.append(f"{feature_name}.{sub_name} 超出物理极值范围(允许:[{hard_min}, {hard_max}], 实际:[{actual_min:.4f}, {actual_max:.4f}])")
             else:
                 # 兜底检查
                 actual_min, actual_max = np.min(np_data), np.max(np_data)
                 if actual_min < self.GLOBAL_FALLBACK_BOUNDS["min"] or actual_max > self.GLOBAL_FALLBACK_BOUNDS["max"]:
-                    return f"{feature_name} 存在飞点数据"
+                    errors.append(f"{feature_name} 存在飞点数据(允许:[{self.GLOBAL_FALLBACK_BOUNDS['min']}, {self.GLOBAL_FALLBACK_BOUNDS['max']}], 实际:[{actual_min:.4f}, {actual_max:.4f}])")
 
-        return ""
+        return errors
 
     def run(self) -> tuple[bool, str]:
-        """🔥 快速失败模式：检查到第一个异常立即返回结果"""
+        """全面检查模式：检查所有文件并汇总所有异常"""
         parquet_files = list(self.data_dir.rglob("*.parquet"))
         if not parquet_files:
             return False, "无Parquet文件"
 
-        # 遍历文件，发现错误立即返回
+        all_errors = []
+        # 遍历所有文件，汇总所有错误
         for file in parquet_files:
-            error = self._check_single_parquet_fast(file)
-            if error:
-                return False, f"文件{file.name}: {error}"
+            errors = self._check_single_parquet(file)
+            if errors:
+                for err in errors:
+                    all_errors.append(f"文件{file.name}: {err}")
 
+        if all_errors:
+            return False, " | ".join(all_errors)
         return True, ""
 
 if __name__ == "__main__":

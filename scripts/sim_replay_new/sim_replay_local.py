@@ -10,18 +10,18 @@
 
 """ Usage example:
 python scripts/sim_replay_new/sim_replay_local.py \
-    --repo_path /home/user/process_symmetry/processed_dataset \
-    --config_name realman \
-    --data_source data \
-    --data_type all \
-    --episode_idx 0
-
-python scripts/sim_replay_new/sim_replay_local.py \
-    --repo_path /home/user/robocoin-dataset/Agilex_Cobot_Magic_pour_water_into_cup_0 \
+    --repo_path /mnt/nas/synnas/成功区/Agilex_Cobot_Magic_fold_short_sleeve_white \
     --config_name agilex \
     --data_source data \
     --data_type all \
-    --episode_idx 0 \
+    --episode_idx 43
+
+python scripts/sim_replay_new/sim_replay_local.py \
+    --repo_path /home/user/robocoin-dataset/cp_data/Agilex_Cobot_Magic_storage_object_closest_cube \
+    --config_name agilex \
+    --data_source data \
+    --data_type all \
+    --episode_idx 9 \
     --version default_version
 """
 

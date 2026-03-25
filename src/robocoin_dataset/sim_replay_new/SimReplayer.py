@@ -202,7 +202,20 @@ class LerobotSimReplayer:
         """解析 YAML，建立 DataField -> QposIndex 的映射表"""
         print("-" * 30)
         print("正在构建数据映射...")
-        for mj_name, data_field in self.sim_cfg["joints"].items():
+        
+        joints_cfg = self.sim_cfg["joints"]
+        if isinstance(joints_cfg, list):
+            # 将列表转换为字典
+            joints_dict = {}
+            for item in joints_cfg:
+                if isinstance(item, dict):
+                    joints_dict.update(item)
+                else:
+                    # 如果只是字符串列表，假设映射关系是同名
+                    joints_dict[item] = item
+            joints_cfg = joints_dict
+            
+        for mj_name, data_field in joints_cfg.items():
             joint_id = mujoco.mj_name2id(
                 self.mjcf_model, mujoco.mjtObj.mjOBJ_JOINT, mj_name
             )

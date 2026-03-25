@@ -87,6 +87,8 @@ mult_sensor:
 
 show_plt: 
   # 第一张图
+  -
+    - right_arm_joint_3_rad
   - 
     - left_gripper_open_scale
   # 第二张图
