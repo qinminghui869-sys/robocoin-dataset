@@ -1,8 +1,17 @@
 unitree_g1:
 - version: default_version
   base_config_path: default_checker_config.yaml
-  specific_config_path: unitree_g1_default.yaml
+  specific_config_path: default_checker_config.yaml
 
+airbot_mmk2:
+- version: default_version
+  base_config_path: default_checker_config.yaml
+  specific_config_path: default_checker_config.yaml
+
+unitree_g1edu-u3:
+- version: default_version
+  base_config_path: default_checker_config.yaml
+  specific_config_path: default_checker_config.yaml
 
 yinhe:
 - version: default_version
