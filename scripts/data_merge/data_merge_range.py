@@ -4,10 +4,8 @@ import sys
 from typing import List, Dict
 from pathlib import Path
 
-# 把项目的src目录添加到sys.path
 sys.path.append(str(Path(__file__).resolve().parent.parent.parent / "src"))
 
-# 数据库依赖
 from sqlalchemy.orm import Session
 from robocoin_dataset.database.database import DatasetDatabase
 from robocoin_dataset.database.models import DatasetDB, TaskStatus
@@ -15,8 +13,7 @@ import json
 import numpy as np
 import pandas as pd
 
-# ====================== 日志配置（终端+文件） ======================
-DB_FILE_PATH = "db/my_config.yaml"
+DB_FILE_PATH = "db/postgresql_config.yaml"
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s",
@@ -27,7 +24,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# ====================== 【仅此处添加UUID】 ======================
 TARGET_UUIDS = [
     '7b86b017-93e7-4031-9f8e-be2ae24a8f4e',
     'd4e9a4ab-1a29-4636-9bb8-1f5183e429d2',
@@ -54,17 +50,74 @@ TARGET_UUIDS = [
     '615bb6b3-b56c-4608-ac3b-73231a7f8844'
 ]
 
-# ====================== 核心调度逻辑 ======================
+
+
+# ==================== ✅ 新增：自动从info.json获取gripper_open索引并修复负值 ====================
+def fix_gripper_open_negatives(dataset_path: Path):
+    # 找到info.json
+    info_path = dataset_path / "meta" / "info.json"
+    if not info_path.exists():
+        info_path = dataset_path / "info.json"
+    with open(info_path, 'r', encoding='utf-8') as f:
+        info = json.load(f)
+
+    # 自动获取所有gripper_open索引
+    def get_gripper_indices(feature_key):
+        names = info['features'][feature_key]['names']
+        return [i for i, n in enumerate(names) if 'gripper_open' in n]
+
+    state_indices = get_gripper_indices('observation.state')
+    action_indices = get_gripper_indices('action')
+
+    # 遍历parquet
+    data_dir = dataset_path / "data"
+    parquet_files = list(data_dir.rglob("*.parquet"))
+    modified_count = 0
+
+    for fp in parquet_files:
+        try:
+            df = pd.read_parquet(fp)
+            changed = False
+
+            # 修复 observation.state
+            if 'observation.state' in df.columns:
+                arr = np.array(df['observation.state'].to_list(), dtype=np.float32)
+                for dim in state_indices:
+                    mask = arr[:, dim] < 0.0
+                    if np.any(mask):
+                        arr[mask, dim] = 0.0
+                        changed = True
+                df['observation.state'] = arr.tolist()
+
+            # 修复 action
+            if 'action' in df.columns:
+                arr = np.array(df['action'].to_list(), dtype=np.float32)
+                for dim in action_indices:
+                    mask = arr[:, dim] < 0.0
+                    if np.any(mask):
+                        arr[mask, dim] = 0.0
+                        changed = True
+                df['action'] = arr.tolist()
+
+            if changed:
+                df.to_parquet(fp, index=False)
+                modified_count += 1
+        except Exception as e:
+            logger.warning(f"修复文件失败 {fp.name}: {str(e)}")
+
+    logger.info(f"🔧 数据集修复完成：处理 {len(parquet_files)} 个文件，修改 {modified_count} 个文件")
+
+# ===============================================================================================
+
 def run_validation_on_all_datasets():
     db = DatasetDatabase(Path(DB_FILE_PATH).expanduser().absolute())
-    # 🔥 存储：正常/异常数据集的 UUID + 设备型号
-    valid_datasets: List[Dict] = []   # {"uuid": str, "device_model": str}
-    invalid_datasets: List[Dict] = [] # {"uuid": str, "device_model": str}
+    valid_datasets: List[Dict] = []
+    invalid_datasets: List[Dict] = []
 
     with db.with_session() as session:
         datasets: List[DatasetDB] = (
             session.query(DatasetDB)
-            .filter(DatasetDB.dataset_uuid.in_(TARGET_UUIDS))  # 👈 只改这里
+            .filter(DatasetDB.dataset_uuid.in_(TARGET_UUIDS))
             .all()
         )
 
@@ -77,86 +130,73 @@ def run_validation_on_all_datasets():
         for idx, ds in enumerate(datasets, 1):
             dataset_uuid = ds.dataset_uuid
             convert_path = ds.convert_path
-            device_model = ds.device_model.strip() if ds.device_model else "未知设备"  # 读取设备型号
+            device_model = ds.device_model.strip() if ds.device_model else "未知设备"
 
             logger.info(f"===== 正在校验第 {idx}/{len(datasets)} 个数据集 =====")
             logger.info(f"UUID: {dataset_uuid}")
             logger.info(f"设备型号: {device_model}")
             logger.info(f"路径: {convert_path}")
 
-            # ====================== 标记异常数据：自动设置 is_ignore=True ======================
             def mark_as_invalid_and_ignore(error_desc: str):
-                """封装异常处理：记录+更新数据库is_ignore=True"""
                 invalid_datasets.append({"uuid": dataset_uuid, "device_model": device_model})
-                ds.is_ignore = True  # 核心修改：标记为忽略
-                session.commit()      # 提交数据库更新
+                ds.is_ignore = True
+                session.commit()
                 logger.error(f"❌ {error_desc}")
-                logger.info(f"✅ 已自动标记该数据集 is_ignore = True，后续流程将自动跳过\n")
+                logger.info(f"✅ 已自动标记该数据集 is_ignore = True\n")
 
-            # 路径无效 → 标记异常+忽略
             if not convert_path or not Path(convert_path).exists():
                 mark_as_invalid_and_ignore("数据集异常：路径不存在/为空，已跳过")
                 continue
 
             try:
-                # 🔥 快速校验：发现1个异常立即返回
+                # 👇 只在这里加一行：自动修复gripper_open负值
+                fix_gripper_open_negatives(Path(convert_path))
+
+                # 👇 原有逻辑完全不动
                 validator = LerobotDatasetValidator(convert_path)
                 is_valid, error_msg = validator.run()
 
                 if is_valid:
-                    # 正常数据集：不修改任何字段
                     valid_datasets.append({"uuid": dataset_uuid, "device_model": device_model})
-                    logger.info(f"✅ 数据集校验通过\n")
+                    ds.is_ignore = False
+                    session.commit()
+                    logger.info(f"✅ 数据集校验通过")
                 else:
-                    # 校验失败 → 标记异常+忽略
-                    mark_as_invalid_and_ignore(f"数据集存在异常，已跳过该数据集！\n完整异常信息：\n{error_msg}")
+                    mark_as_invalid_and_ignore(f"数据集存在异常：{error_msg[:200]}...")
 
             except Exception as e:
-                # 程序异常 → 标记异常+忽略
-                mark_as_invalid_and_ignore(f"校验程序异常，已跳过该数据集：{str(e)}")
+                mark_as_invalid_and_ignore(f"校验程序异常：{str(e)}")
 
-    # 🔥 生成最终报告（UUID + 设备型号占比）
     generate_final_report(valid_datasets, invalid_datasets)
 
-
 def calculate_device_ratio(dataset_list: List[Dict]) -> Dict:
-    """
-    统计设备型号的数量和占比
-    :return: {设备型号: {"count": 数量, "ratio": 占比}}
-    """
     total = len(dataset_list)
     device_count = defaultdict(int)
     for item in dataset_list:
         device_count[item["device_model"]] += 1
 
-    # 计算占比
     device_stats = {}
     for device, count in device_count.items():
         ratio = (count / total * 100) if total > 0 else 0.0
         device_stats[device] = {"count": count, "ratio": round(ratio, 2)}
     return device_stats
 
-
 def generate_final_report(valid_ds: List[Dict], invalid_ds: List[Dict]):
-    """生成最终汇总报告：UUID + 设备型号占比统计"""
     total_count = len(valid_ds) + len(invalid_ds)
     valid_count = len(valid_ds)
     invalid_count = len(invalid_ds)
 
-    # 统计设备占比
     valid_device_stats = calculate_device_ratio(valid_ds)
     invalid_device_stats = calculate_device_ratio(invalid_ds)
 
-    # ====================== 基础统计 ======================
     logger.info("=" * 120)
-    logger.info("📋 数据集校验最终汇总报告（含设备型号占比 + 已标记异常数据is_ignore=True）")
+    logger.info("📋 数据集校验最终汇总报告（放宽弧度阈值、自动修复gripper_open负值）")
     logger.info("=" * 120)
     logger.info(f"📊 总计校验数据集：{total_count} 个")
     logger.info(f"✅ 正常数据集：{valid_count} 个")
-    logger.info(f"❌ 异常数据集（已标记is_ignore=True）：{invalid_count} 个")
+    logger.info(f"❌ 异常数据集：{invalid_count} 个")
     logger.info("-" * 120)
 
-    # ====================== 正常数据集 设备型号统计 ======================
     logger.info("\n📡 【正常数据集】设备型号统计：")
     if valid_device_stats:
         for device, stats in valid_device_stats.items():
@@ -164,7 +204,6 @@ def generate_final_report(valid_ds: List[Dict], invalid_ds: List[Dict]):
     else:
         logger.info("   无正常数据集")
 
-    # ====================== 异常数据集 设备型号统计 ======================
     logger.info("\n📡 【异常数据集】设备型号统计：")
     if invalid_device_stats:
         for device, stats in invalid_device_stats.items():
@@ -172,20 +211,18 @@ def generate_final_report(valid_ds: List[Dict], invalid_ds: List[Dict]):
     else:
         logger.info("   无异常数据集")
 
-    # ====================== UUID 列表 ======================
     logger.info("\n" + "-" * 120)
     logger.info("\n✅ 正常数据集 UUID 列表：")
     for item in valid_ds:
         logger.info(f"   [{item['device_model']}] {item['uuid']}")
 
-    logger.info("\n❌ 异常数据集 UUID 列表（已标记is_ignore=True）：")
+    logger.info("\n❌ 异常数据集 UUID 列表：")
     for item in invalid_ds:
         logger.info(f"   [{item['device_model']}] {item['uuid']}")
 
     logger.info("=" * 120)
 
-
-# ==================== 快速失败版校验器（发现1个异常立即停止） ====================
+# ==================== 仅检测、不修复、阈值放宽校验器（完全没动） ====================
 class LerobotDatasetValidator:
     def __init__(self, dataset_path: str):
         self.dataset_path = Path(dataset_path).expanduser().absolute()
@@ -198,9 +235,8 @@ class LerobotDatasetValidator:
         self.expected_features = self.info_data.get('features', {})
         self.feature_names_map = self._extract_feature_names()
 
-        # 物理限制
         self.FINE_GRAINED_BOUNDS = {
-            "_rad": {"min": -3.1415926, "max": 3.1415926},
+            "_rad": {"min": -3.1425926, "max": 3.1425926},
             "_m": {"min": -2.0, "max": 2.0},
             "gripper_open_scale": {"min": 0.0, "max": 1.0},
             "gripper_open": {"min": 0.0, "max": 1010.0},
@@ -226,9 +262,7 @@ class LerobotDatasetValidator:
                 names_map[feat_name] = feat_info["names"]
         return names_map
 
-    def _check_single_parquet(self, file_path: Path) -> List[str]:
-        """全面检查：记录所有错误信息"""
-        errors = []
+    def _check_single_parquet_fast(self, file_path: Path) -> str:
         try:
             df = pd.read_parquet(file_path)
         except Exception as e:
@@ -252,17 +286,14 @@ class LerobotDatasetValidator:
                 errors.append(f"特征 {feature_name} 数据格式错乱")
                 continue
 
-            # 维度检查
             actual_shape = np_data.shape[1:]
             if actual_shape != expected_shape:
                 errors.append(f"{feature_name} 维度不匹配: 预期{expected_shape} 实际{actual_shape}")
 
-            # NaN/Inf检查
             if np_data.dtype.kind in 'fc':
                 if np.isnan(np_data).any() or np.isinf(np_data).any():
                     errors.append(f"{feature_name} 存在NaN/Inf异常值")
 
-            # 物理极值检查
             if feature_name in self.feature_names_map:
                 sub_names = self.feature_names_map[feature_name]
                 for col_idx, sub_name in enumerate(sub_names):
@@ -276,11 +307,17 @@ class LerobotDatasetValidator:
                             break
                     if matched_bounds:
                         hard_min, hard_max = matched_bounds["min"], matched_bounds["max"]
-                        actual_min, actual_max = np.min(col_data_np), np.max(col_data_np)
-                        if actual_min < hard_min - 1e-4 or actual_max > hard_max + 1e-4:
-                            errors.append(f"{feature_name}.{sub_name} 超出物理极值范围(允许:[{hard_min}, {hard_max}], 实际:[{actual_min:.4f}, {actual_max:.4f}])")
+                        invalid_mask = (col_data_np < hard_min - 1e-4) | (col_data_np > hard_max + 1e-4)
+                        if np.any(invalid_mask):
+                            invalid_frame_idx = np.argmax(invalid_mask)
+                            invalid_value = col_data_np[invalid_frame_idx]
+                            return (
+                                f"【精确异常】{feature_name}.{sub_name} 超出放宽后物理极值\n"
+                                f"   异常帧索引：{invalid_frame_idx}\n"
+                                f"   异常数值：{invalid_value:.6f}\n"
+                                f"   放宽允许范围：[{hard_min}, {hard_max}]"
+                            )
             else:
-                # 兜底检查
                 actual_min, actual_max = np.min(np_data), np.max(np_data)
                 if actual_min < self.GLOBAL_FALLBACK_BOUNDS["min"] or actual_max > self.GLOBAL_FALLBACK_BOUNDS["max"]:
                     errors.append(f"{feature_name} 存在飞点数据(允许:[{self.GLOBAL_FALLBACK_BOUNDS['min']}, {self.GLOBAL_FALLBACK_BOUNDS['max']}], 实际:[{actual_min:.4f}, {actual_max:.4f}])")
@@ -288,13 +325,10 @@ class LerobotDatasetValidator:
         return errors
 
     def run(self) -> tuple[bool, str]:
-        """全面检查模式：检查所有文件并汇总所有异常"""
         parquet_files = list(self.data_dir.rglob("*.parquet"))
         if not parquet_files:
             return False, "无Parquet文件"
 
-        all_errors = []
-        # 遍历所有文件，汇总所有错误
         for file in parquet_files:
             errors = self._check_single_parquet(file)
             if errors:

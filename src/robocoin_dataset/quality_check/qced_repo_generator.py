@@ -449,7 +449,7 @@ def gen_qced_repo(
         input_feature=input_feature,
         output_feature=qced_feature,
     )
-    hard_link_root_dir = repo_path.parent / "三次成功区"
+    hard_link_root_dir = repo_path.parent / "四次成功区"
     hard_link_root_dir.mkdir(parents=True, exist_ok=True)  # 必须加，自动创建目录
     hard_link_repo_path = hard_link_root_dir / f"{repo_path.name}_{hl_suffix}"
     # hard_link_repo_path = repo_path.parent / f"{str(repo_path.name)}_{hl_suffix}"
