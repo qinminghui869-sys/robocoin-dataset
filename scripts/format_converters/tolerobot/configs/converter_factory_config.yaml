@@ -126,6 +126,13 @@ visionpro:
   class: LerobotFormatConverterHdf5
   converter_config_path: converter_config_visionpro.yaml
 
+GenRobot_DAS_Gripper_UMI:
+- version: default_version
+  verison_description: UMI MCAP captured by GenRobot DAS Gripper, three h264 rgb cameras and magnetic encoder gripper opening
+  module: robocoin_dataset.format_converter.tolerobot.lerobot_format_converter_umi_mcap
+  class: LerobotFormatConverterUmiMcap
+  converter_config_path: converter_config_genrobot_das_gripper_umi_mcap.yaml
+
 leju_robot:
 - version: default_version
   verison_description: two arms and two grippers, three rgb cameras with high, left wrist, right wrist

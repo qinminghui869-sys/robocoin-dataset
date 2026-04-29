@@ -21,6 +21,8 @@ dependencies = [
   "pyyaml",
   "deepmerge",
   "opencv-python",
+  "av",
+  "mcap",
   "json-lines",
   "rosbags",
   "ruamel.yaml",

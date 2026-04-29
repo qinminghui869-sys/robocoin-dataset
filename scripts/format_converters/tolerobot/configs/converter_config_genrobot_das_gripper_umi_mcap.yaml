@@ -1,0 +1,39 @@
+fps: 30
+task_description: operate object with GenRobot DAS Gripper
+
+features:
+  observation:
+    images:
+    - cam_name: cam_front_fisheye_rgb
+      args:
+        cam_name: cam_front_fisheye_rgb
+        mcap_topic: /robot0/sensor/camera0/compressed
+
+    - cam_name: cam_left_wrist_rgb
+      args:
+        cam_name: cam_left_wrist_rgb
+        mcap_topic: /robot0/sensor/camera1/compressed
+
+    - cam_name: cam_right_wrist_rgb
+      args:
+        cam_name: cam_right_wrist_rgb
+        mcap_topic: /robot0/sensor/camera2/compressed
+
+    state:
+      sub_state:
+      - names:
+        - left_gripper_open
+        args:
+          mcap_topic: /robot0/sensor/magnetic_encoder
+          range_from: 0
+          range_to: 1
+
+  action:
+    timeline_offset: 1
+    sub_action:
+    - names:
+      - left_gripper_open
+      args:
+        mcap_topic: /robot0/sensor/magnetic_encoder
+        range_from: 0
+        range_to: 1
